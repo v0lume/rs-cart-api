@@ -1,15 +1,54 @@
 import { Injectable } from '@nestjs/common';
 
 import { v4 } from 'uuid';
+import { Client } from 'pg';
 
 import { Cart } from '../models';
+
+const dbProps = {
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME
+};
 
 @Injectable()
 export class CartService {
   private userCarts: Record<string, Cart> = {};
 
-  findByUserId(userId: string): Cart {
-    return this.userCarts[ userId ];
+  async findByUserId(userId: string): Promise<Cart> {
+    const client = new Client(dbProps);
+    await client.connect();
+
+    try{
+      const result = await client.query(`
+        SELECT *
+        FROM carts as c
+        LEFT JOIN cart_items AS ci on c.id = ci.cart_id
+        WHERE c.user_id = '${userId}';
+      `);
+
+      const cartItems = result.rows;
+
+      const cart: Cart = {
+        id: cartItems[0].id,
+        items: cartItems.map(x => ({
+          product: {
+            id: x.product_id,
+            title: 'UNDEFINED',
+            description: 'UNDEFINED',
+            price: 0,
+          },
+          count: x.count,
+        }))
+      }
+      return cart;
+    } catch (error){
+      console.error('error', error);
+    } finally {
+      client.end();
+    }
   }
 
   createByUserId(userId: string) {
@@ -24,8 +63,8 @@ export class CartService {
     return userCart;
   }
 
-  findOrCreateByUserId(userId: string): Cart {
-    const userCart = this.findByUserId(userId);
+  async findOrCreateByUserId(userId: string): Promise<Cart> {
+    const userCart = await this.findByUserId(userId);
 
     if (userCart) {
       return userCart;
@@ -34,18 +73,26 @@ export class CartService {
     return this.createByUserId(userId);
   }
 
-  updateByUserId(userId: string, { items }: Cart): Cart {
-    const { id, ...rest } = this.findOrCreateByUserId(userId);
+  async updateByUserId(userId: string, cart: Cart): Promise<Cart> {
+    const client = new Client(dbProps);
 
-    const updatedCart = {
-      id,
-      ...rest,
-      items: [ ...items ],
+    await client.connect();
+
+    try {
+      for await (const cartItem of cart.items){
+        await client.query(`
+          UPDATE cart_items
+          SET count=${cartItem.count}
+          WHERE product_id = '${cartItem.product.id}' AND cart_id = '${cart.id}';
+        `)
+      }
+
+      return cart;
+    } catch (error) {
+      console.error('error', error);
+    } finally {
+      client.end();
     }
-
-    this.userCarts[ userId ] = { ...updatedCart };
-
-    return { ...updatedCart };
   }
 
   removeByUserId(userId): void {
